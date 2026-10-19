@@ -137,6 +137,12 @@
             "file_name": "images/packed-6bfbe0d733748ab637987277f1b3c5ab075f8d6267597e3fb9ddbe6baeeb9226.png",
             "width": 5120,
             "height": 2160
+        },
+        {
+            "id": 39,
+            "file_name": "images/popup-esc-close.png",
+            "width": 5120,
+            "height": 2160
         }
     ],
     "annotations": [
@@ -698,6 +704,19 @@
             ],
             "area": 3225,
             "iscrowd": 0
+        },
+        {
+            "id": 44,
+            "image_id": 39,
+            "category_id": 44,
+            "bbox": [
+                4970,
+                77,
+                70,
+                30
+            ],
+            "area": 2100,
+            "iscrowd": 0
         }
     ],
     "categories": [
@@ -914,6 +933,11 @@
         {
             "id": 43,
             "name": "Recall-Commander",
+            "supercategory": ""
+        },
+        {
+            "id": 44,
+            "name": "Popup-ESC-Close",
             "supercategory": ""
         }
     ]

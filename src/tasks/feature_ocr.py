@@ -47,6 +47,23 @@ OCR_TEXTS = {  # 两项舰名动态读取配置，其余元素保留固定的中
     "Confirm-Container": ("是", "Yes"),
     "Pick-Container": ("每日补给箱", "Daily containers", "Daily container"),
     "Container-Menu": ("补给箱", "Containers", "Container"),
+    "Match-Stopped": ("玩家匹配已停止", "Matchmaking has stopped", "Matchmaking stopped"),
+    "Battle-Survey-Title": ("您对刚刚进行的这场战斗满意度如何？", "How satisfied are you with the battle you just played?"),
+    "Battle-Survey-Close": ("关闭", "Close"),
+    "Inactivity-Penalty-Title": ("消极行为", "Unsporting conduct", "Unsportsmanlike conduct"),
+    "Inactivity-Penalty-Close": ("关闭", "Close"),
+}
+
+MODAL_CLOSE_TITLES = {  # 同名关闭按钮必须在同一帧确认弹窗标题，不能只凭通用文字点击。
+    "Battle-Survey-Close": "Battle-Survey-Title",
+    "Inactivity-Penalty-Close": "Inactivity-Penalty-Title",
+}
+
+MODAL_REGIONS = {  # 相对区域适配不同分辨率，不依赖某一个比例的模板是否齐全。
+    "Battle-Survey-Title": (.34, .34, .66, .44),
+    "Inactivity-Penalty-Title": (.40, .34, .60, .48),
+    "Battle-Survey-Close": (.43, .47, .58, .57),
+    "Inactivity-Penalty-Close": (.43, .47, .58, .57),
 }
 
 
@@ -101,6 +118,11 @@ def clipped_box(frame, left, top, right, bottom):  # 所有 OCR 区域先裁到�
 
 def search_box(name, frame):  # 采用实测过的邻近扩展范围，保留上下文文字。
     height, width = frame.shape[:2]
+    if name in MODAL_REGIONS:
+        left, top, right, bottom = MODAL_REGIONS[name]
+        return clipped_box(frame, width * left, height * top, width * right, height * bottom)
+    if name == "Match-Stopped":
+        return clipped_box(frame, width * .38, height * .36, width * .62, height * .48)  # 只查找匹配停止弹窗的完整标题，避免匹配普通确定按钮。
     if name == "Pick-First-Ship":
         return clipped_box(frame, 0, height * .7, width, height)  # 港口选船搜索底部 30% 的全部行列。
     feature = annotated_box(name, frame)
@@ -161,6 +183,9 @@ def find_text(task, name, frame, threshold, box=None):  # 将文字匹配结果�
     matches = [item for item in texts
                if item.confidence >= threshold and
                (normalized(item.name) in accepted or
+                (name == "Battle-Survey-Title" and normalized(item.name).startswith("您对刚刚") and
+                 "这场" in normalized(item.name) and "战" in normalized(item.name) and
+                 normalized(item.name).endswith("满意度如何")) or  # 小尺寸 OCR 会漏掉“进行”“战斗”的个别字，仍要求完整问题的首尾及战斗上下文。
                 (name in SHIP_NAME_FEATURES and matches_ship_name(item.name, wanted, allow_substring=name == "Libertad-Nameplate")) or
                 (name == "Control-Camera" and any(text in normalized(item.name) for text in accepted)))]  # F1 可能与完整提示合成同一行，仅该状态提示允许包含匹配。
     if name == "Pick-First-Ship":
@@ -172,10 +197,13 @@ def find_text(task, name, frame, threshold, box=None):  # 将文字匹配结果�
 
 
 def find_ocr_feature(task, name, frame, threshold=0, box=None):  # 对同文案按钮添加同一帧中的场景约束。
-    if frame is None or (name != "Pick-First-Ship" and annotated_box(name, frame) is None):
+    if frame is None or (name not in ("Pick-First-Ship", "Match-Stopped") and name not in MODAL_REGIONS and annotated_box(name, frame) is None):
         return None
     threshold = threshold if threshold else task.threshold
     context_threshold = max(.8, threshold)  # 诊断的低阈值不能绕过确认弹窗的上下文检查。
+    if name in MODAL_CLOSE_TITLES:
+        if find_text(task, MODAL_CLOSE_TITLES[name], frame, context_threshold) is None:
+            return None  # 问卷只关闭，不选择或提交评价；处罚通知只关闭，不改变处罚。
     if name in SHIP_NAME_FEATURES:
         in_port = find_text(task, "Join-Battle", frame, context_threshold) is not None  # 港口和战斗中的同名文字位置接近，必须区分页面。
         if (name == "Pick-First-Ship") != in_port:

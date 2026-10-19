@@ -40,19 +40,19 @@ class TestBattleEntryFlow(unittest.TestCase):
                         patch.object(self.task, "get_feature_by_name", return_value=object()), \
                         patch.object(self.task, "_recall_commander_if_needed", return_value=True), \
                         patch.object(self.task, "_return_to_main", return_value=True), \
-                        patch.object(self.task, "_remove_optional_item", return_value=True):
+                        patch.object(self.task, "_select_battle_mode", return_value=True), \
+                        patch.object(self.task, "_prepare_loadout_page", return_value=True):
                     self.assertTrue(self.task._prepare_and_join_first_battle())
-                self.assertEqual(["Pick-First-Ship", "Select-Battle-Mode", mode, "Addon-Selector",
-                                  "Equipment", "Join-Battle"], [c.args[0] for c in click.call_args_list])
+                self.assertEqual(["Pick-First-Ship", "Join-Battle"], [c.args[0] for c in click.call_args_list])
 
     def test_missing_selected_mode_stops_without_falling_back(self):
         self.task.config["Battle Mode"] = "Asymmetry-Battle"
         with patch.object(self.task, "wait_click_feature", return_value=True) as click, \
                 patch.object(self.task, "get_feature_by_name", return_value=None), \
                 patch.object(self.task, "_recall_commander_if_needed", return_value=True), \
-                patch.object(self.task, "log_error"):
+                patch.object(self.task, "log_error"), patch.object(self.task, "_save_failure_screenshot"):
             self.assertFalse(self.task._prepare_and_join_first_battle())
-        self.assertEqual(["Pick-First-Ship", "Select-Battle-Mode"], [c.args[0] for c in click.call_args_list])
+        self.assertEqual(["Pick-First-Ship"], [c.args[0] for c in click.call_args_list])
 
     def test_relocated_mode_icons_are_detected_and_clicked_across_the_screen(self):
         for mode in self.task.BATTLE_MODES:
@@ -364,22 +364,15 @@ class TestBattleEntryFlow(unittest.TestCase):
         fire.assert_not_called()
 
     def test_control_camera_stops_fire_and_opens_leave_flow(self):
-        for can_continue, expected_name, expected_result in ((True, "Continue-Battle-After-Sunk", "continued"),
-                                                            (False, "Leave-Battle-Confirm", "left")):
-            with self.subTest(can_continue=can_continue):
-                continue_box = Box(1, 1, 10, 10, name="Continue-Battle-After-Sunk")
-                leave_box = Box(20, 1, 10, 10, name="Leave-Battle-Confirm")
-                with patch.object(self.task, "next_frame"), \
-                        patch.object(self.task, "find_one", side_effect=lambda name, **kwargs: object() if name in ("Control-Camera", "In-Battle-Compass") else None), \
-                        patch.object(self.task, "wait_until", return_value=(continue_box, leave_box)), \
-                        patch.object(self.task, "send_key") as keys, patch.object(self.task, "click") as click, \
-                        patch.object(self.task, "_send_battle_action") as fire, \
-                        patch.object(self.task, "_initialize_battle_navigation") as navigate:
-                    self.assertEqual(expected_result, self.task._run_until_result(can_continue))
-                keys.assert_called_once_with("esc", after_sleep=1)
-                self.assertEqual(expected_name, click.call_args.args[0].name)
-                fire.assert_not_called()
-                navigate.assert_not_called()
+        for can_continue, expected in ((True, "continued"), (False, "left")):
+            with self.subTest(can_continue=can_continue), patch.object(self.task, "next_frame"), patch.object(
+                    self.task, "find_one", side_effect=lambda name, **kwargs: object() if name == "Control-Camera" else None), patch.object(
+                    self.task, "_transition_battle_end", return_value=expected) as transition, patch.object(
+                    self.task, "_send_battle_action") as fire, patch.object(self.task, "_initialize_battle_navigation") as navigate:
+                self.assertEqual(expected, self.task._run_until_result(can_continue))
+            transition.assert_called_once_with(can_continue, open_leave=True)
+            fire.assert_not_called()
+            navigate.assert_not_called()
 
     def test_missing_optional_templates_are_ignored_by_older_packs(self):
         frame = cv2.imread("assets/16x10/images/0.png")

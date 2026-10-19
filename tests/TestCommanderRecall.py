@@ -60,12 +60,12 @@ class TestCommanderRecall(unittest.TestCase):
                     patch.object(self.task, "_recall_commander_if_needed", side_effect=recall), \
                     patch.object(self.task, "get_feature_by_name", return_value=object()), \
                     patch.object(self.task, "_return_to_main", return_value=True), \
-                    patch.object(self.task, "_remove_optional_item", return_value=True):
+                    patch.object(self.task, "_select_battle_mode", return_value=True), \
+                    patch.object(self.task, "_prepare_loadout_page", return_value=True):
                 self.assertEqual(selected and recalled, self.task._prepare_and_join_first_battle())
             self.assertEqual(["Pick-First-Ship"] if not selected else
                              ["Pick-First-Ship", "recall"] if not recalled else
-                             ["Pick-First-Ship", "recall", "Select-Battle-Mode", "PVE-Battle",
-                              "Addon-Selector", "Equipment", "Join-Battle"], events)
+                             ["Pick-First-Ship", "recall", "Join-Battle"], events)
 
     def test_commander_ocr_stays_near_annotation_and_does_not_resize_or_use_template(self):
         frame = np.zeros((2160, 5120, 3), dtype=np.uint8)

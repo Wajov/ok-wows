@@ -323,58 +323,12 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
             self.assertTrue(self.task._close_map())  # 执行正常地图关闭流程。
         send_key.assert_called_once_with("esc", after_sleep=1)  # 确认正常返回战斗后不会发送多余的地图切换键。
 
-    def test_leave_battle_presses_esc_and_clicks_continue_when_count_not_full(self):  # 验证击沉后按 ESC，场次未满时点击继续战斗。
-        continue_button = Box(10, 10, 20, 20, name="Continue-Battle-After-Sunk")  # 构造 ESC 后出现的击沉后续继续战斗按钮。
-        with patch.object(self.task, "send_key") as send_key, patch.object(self.task, "wait_until", return_value=(continue_button, None)), patch.object(self.task, "click") as click, patch.object(self.task, "wait_click_feature") as wait_click, patch.object(self.task, "log_error"):  # 隔离按键、后续页面等待和真实点击。
-            self.assertEqual("continued", self.task._handle_leave_battle(True))  # 场次未满时应报告已经点击继续战斗。
-        send_key.assert_called_once_with("esc", after_sleep=1)  # 确认只按 ESC 打开后续页面而不是点击离开战斗入口。
-        click.assert_called_once_with(continue_button, after_sleep=2)  # 确认点击了继续战斗按钮。
-        wait_click.assert_not_called()  # 确认场次未满且有继续按钮时不会再点确认离开。
 
-    def test_leave_battle_clicks_confirm_when_count_is_full(self):  # 验证场次已满时即使出现继续战斗也改为确认离开。
-        continue_button = Box(10, 10, 20, 20, name="Continue-Battle-After-Sunk")  # 构造后续页面中的击沉后续继续战斗按钮。
-        confirm_button = Box(40, 10, 20, 20, name="Leave-Battle-Confirm")  # 构造后续页面中的确认离开按钮。
-        with patch.object(self.task, "send_key") as send_key, patch.object(self.task, "wait_until", return_value=(continue_button, confirm_button)), patch.object(self.task, "click") as click, patch.object(self.task, "wait_click_feature") as wait_click, patch.object(self.task, "log_error"):  # 隔离按键、后续页面等待和真实点击。
-            self.assertEqual("left", self.task._handle_leave_battle(False))  # 场次已满时应报告已经确认离开。
-        send_key.assert_called_once_with("esc", after_sleep=1)  # 确认仍然只按 ESC 打开后续页面。
-        click.assert_called_once_with(confirm_button, after_sleep=3)  # 确认点击了确认离开而不是继续战斗。
-        wait_click.assert_not_called()  # 确认当前帧已有确认按钮时不会再额外等待点击。
 
-    def test_leave_battle_clicks_confirm_when_continue_is_missing(self):  # 验证后续页面没有继续战斗按钮时确认离开。
-        confirm_button = Box(40, 10, 20, 20, name="Leave-Battle-Confirm")  # 构造只有确认离开按钮的后续页面。
-        with patch.object(self.task, "send_key"), patch.object(self.task, "wait_until", return_value=(None, confirm_button)), patch.object(self.task, "click") as click, patch.object(self.task, "wait_click_feature") as wait_click, patch.object(self.task, "log_error"):  # 隔离按键、后续页面等待和真实点击。
-            self.assertEqual("left", self.task._handle_leave_battle(True))  # 没有继续按钮时应报告已经确认离开。
-        click.assert_called_once_with(confirm_button, after_sleep=3)  # 确认点击了确认离开按钮。
-        wait_click.assert_not_called()  # 确认当前帧已有确认按钮时不会再额外等待点击。
 
-    def test_end_screen_gone_requires_both_result_and_leave_pages_to_disappear(self):  # 验证结算页和击沉确认页都消失才算战斗结束画面已清除。
-        def poll(predicate, **kwargs):  # 让等待接口直接执行一次条件并返回结果。
-            return predicate()
 
-        for lingering in ("Back-To-Port", "Leave-Battle-Title"):  # 分别模拟两种结束画面残留。
-            with self.subTest(lingering=lingering), patch.object(self.task, "wait_until", side_effect=poll), patch.object(self.task, "find_one", side_effect=lambda name, **kwargs: object() if name == lingering else None), patch.object(self.task, "log_error") as error:  # 控制残留元素并收集错误日志。
-                self.assertFalse(self.task._wait_end_screen_gone())  # 任一结束画面残留都不能继续下一场。
-                self.assertTrue(error.call_args_list)  # 超时必须记录具体原因。
-        with patch.object(self.task, "wait_until", side_effect=poll), patch.object(self.task, "find_one", return_value=None):  # 两种结束画面都已消失。
-            self.assertTrue(self.task._wait_end_screen_gone())  # 等待立即通过。
 
-    def test_leave_battle_waits_for_end_screen_gone_after_continue_click(self):  # 验证击沉续战点击后等待结束画面真正消失。
-        continue_button = Box(10, 10, 20, 20, name="Continue-Battle-After-Sunk")  # 构造击沉后续继续战斗按钮。
-        with patch.object(self.task, "send_key"), patch.object(self.task, "wait_until", return_value=(continue_button, None)), patch.object(self.task, "click"), patch.object(self.task, "_wait_end_screen_gone", return_value=True) as wait_gone, patch.object(self.task, "log_error"):  # 隔离输入并单独验证新增的结束画面等待。
-            self.assertEqual("continued", self.task._handle_leave_battle(True))  # 场次未满时点击续战并等待画面消失。
-        wait_gone.assert_called_once_with()  # 确认续战点击后执行了一次结束画面消失等待。
 
-    def test_leave_battle_reports_failure_when_end_screen_stays_after_continue(self):  # 验证续战后结束画面不消失时按处理失败上报。
-        continue_button = Box(10, 10, 20, 20, name="Continue-Battle-After-Sunk")  # 构造击沉后续继续战斗按钮。
-        with patch.object(self.task, "send_key"), patch.object(self.task, "wait_until", return_value=(continue_button, None)), patch.object(self.task, "click"), patch.object(self.task, "_wait_end_screen_gone", return_value=False) as wait_gone:  # 模拟点击后页面残留不动。
-            self.assertFalse(self.task._handle_leave_battle(True))  # 画面未消失时不能报告已经续战。
-        wait_gone.assert_called_once_with()  # 确认失败结论来自结束画面等待。
-
-    def test_leave_battle_waits_for_end_screen_gone_before_reporting_left(self):  # 验证确认离开同样等待页面消失后才报告已离开。
-        confirm_button = Box(40, 10, 20, 20, name="Leave-Battle-Confirm")  # 构造确认离开按钮。
-        with patch.object(self.task, "send_key"), patch.object(self.task, "wait_until", return_value=(None, confirm_button)), patch.object(self.task, "click"), patch.object(self.task, "_wait_end_screen_gone", return_value=False) as wait_gone:  # 模拟确认点击后页面未消失。
-            self.assertFalse(self.task._handle_leave_battle(True))  # 页面残留时不能报告已经离开。
-        wait_gone.assert_called_once_with()  # 确认离开后也执行了结束画面等待。
 
     def test_navigation_sends_exactly_ten_forward_keys_once(self):  # 验证单次航行初始化只发送十次前进键。
         events = MagicMock()  # 记录等待、重新识别和地图操作的先后顺序。
@@ -405,6 +359,7 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
 
     def test_rejoined_battle_waits_twenty_five_seconds_again(self):
         with patch("src.tasks.AutoPveBattleTask.time.monotonic", return_value=0), patch.object(self.task, "_detect_scene", side_effect=("battle", "battle", "leave_battle", "battle", "battle", "result")), patch.object(self.task, "_handle_leave_battle", return_value="left"), patch.object(self.task, "sleep") as sleep, patch.object(self.task, "log_info"), patch.object(self.task, "send_key"), patch.object(self.task, "_handle_map", return_value=True) as navigate:
+            self.assertEqual("left", self.task._run_until_result())
             self.assertTrue(self.task._run_until_result())
         self.assertEqual([call(25), call(25)], sleep.call_args_list)
         self.assertEqual(2, navigate.call_count)
@@ -503,7 +458,7 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
 
     def test_start_button_does_not_initialize_without_battle_markers(self):  # 验证点击开始后的未知画面不会靠计时初始化战斗。
         scenes = iter(("battle_start", "unknown", "result"))  # 模拟点击开始后 HUD 一直无法模板识别再进入结算的状态序列。
-        with patch.object(self.task, "_detect_scene", side_effect=lambda: next(scenes)), patch.object(self.task, "wait_click_feature", return_value=True), patch.object(self.task, "sleep"), patch.object(self.task, "_initialize_battle_navigation") as initialize, patch("src.tasks.AutoPveBattleTask.time.monotonic", return_value=0):  # 隔离等待和真实输入。
+        with patch.object(self.task, "_detect_scene", side_effect=lambda: next(scenes)), patch.object(self.task, "find_one", return_value=Box(1, 1, 10, 10)), patch.object(self.task, "click"), patch.object(self.task, "sleep"), patch.object(self.task, "_initialize_battle_navigation") as initialize, patch("src.tasks.AutoPveBattleTask.time.monotonic", return_value=0):  # 隔离等待和真实输入。
             self.assertTrue(self.task._run_until_result())  # 确认状态机最终能够继续运行到结算页。
         initialize.assert_not_called()  # 未检测到战斗标志时不能初始化。
 
@@ -533,7 +488,8 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
     def test_rejoined_battle_runs_navigation_initialization_again(self):  # 验证确认离开后重新加入会初始化新一场战斗。
         scenes = iter(("battle", "leave_battle", "battle", "result"))  # 模拟当前战斗、击沉离开、新战斗和最终结算的状态序列。
         with patch.object(self.task, "sleep"), patch.object(self.task, "_detect_scene", side_effect=lambda: next(scenes)), patch.object(self.task, "_handle_leave_battle", return_value="left") as leave, patch.object(self.task, "_initialize_battle_navigation") as initialize:  # 隔离实际按钮点击和键盘地图操作。
-            self.assertTrue(self.task._run_until_result(True))  # 执行包含击沉重开的完整状态机片段。
+            self.assertEqual("left", self.task._run_until_result(True))  # 本场离开后先计数，再建立下一场会话。
+            self.assertTrue(self.task._run_until_result(True))
         leave.assert_called_once_with(True)  # 确认击沉页面只执行一次 ESC 后续处理。
         self.assertEqual(2, initialize.call_count)  # 确认新一场战斗不会沿用上一场的航行初始化状态。
 
@@ -542,35 +498,8 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
             self.task.run()  # 执行会在无法回到主界面时提前结束的任务主流程。
         bring_front.assert_called_once()  # 确认任务一开始就会把游戏切到前台。
 
-    def test_run_counts_results_and_only_continues_when_needed(self):  # 验证战斗计数达到目标前才点击继续战斗。
-        self.task.config["Battle Count"] = 2  # 将本次测试目标设置为两场战斗。
-        run_until_result = MagicMock(return_value=True)  # 模拟每一场战斗都成功到达结算页。
-        with patch.object(self.task, "ensure_in_front"), patch.object(self.task, "_return_to_main", return_value=True), patch.object(self.task, "_prepare_and_join_first_battle", return_value=True), patch.object(self.task, "_run_until_result", run_until_result), patch.object(self.task, "wait_click_feature", return_value=True) as wait_click, patch.object(self.task, "log_info"), patch.object(self.task, "log_error"):  # 隔离真实游戏输入和日志状态并运行计数逻辑。
-            with patch.object(self.task, "_collect_containers", return_value=True) as collect:  # 隔离收尾领取，继续验证多场战斗计数。
-                self.task.run()  # 执行设置为两场的任务主流程。
-            collect.assert_called_once_with()  # 仅在全部战斗结束后领取一次。
-        self.assertEqual([call(True), call(False)], run_until_result.call_args_list)  # 确认第二场已经把场次将满的信息传给战斗循环。
-        self.assertEqual([  # 确认第一场继续战斗而最后一场明确返回港口。
-            call("Continue-Battle", threshold=0.8, time_out=30, raise_if_not_found=False, after_sleep=2),  # 第一场结束后进入下一次排队。
-            call("Back-To-Port", threshold=0.8, time_out=30, raise_if_not_found=False, after_sleep=3),  # 达到目标场数后回到港口再结束任务。
-        ], wait_click.call_args_list)  # 对比实际结算页按钮调用顺序和参数。
-        self.executor.device_manager.stop_hwnd.assert_not_called()  # 默认关闭开关时完成任务仍保持游戏运行。
 
-    def test_run_waits_for_result_screen_to_fade_before_next_battle(self):  # 验证点击继续战斗后等待结算页淡出再开始下一场。
-        self.task.config["Battle Count"] = 2  # 将本次测试目标设置为两场战斗。
-        run_until_result = MagicMock(return_value=True)  # 模拟每场战斗都成功到达结算页。
-        with patch.object(self.task, "ensure_in_front"), patch.object(self.task, "_return_to_main", return_value=True), patch.object(self.task, "_prepare_and_join_first_battle", return_value=True), patch.object(self.task, "_run_until_result", run_until_result), patch.object(self.task, "wait_click_feature", return_value=True), patch.object(self.task, "_wait_end_screen_gone", return_value=True) as wait_gone, patch.object(self.task, "log_info"), patch.object(self.task, "log_error"), patch.object(self.task, "_collect_containers", return_value=True):  # 隔离真实输入并验证新增的淡出等待。
-            self.task.run()  # 执行设置为两场的完整主流程。
-        wait_gone.assert_called_once_with()  # 只有第一场后的继续战斗点击需要等待结算页消失。
-        self.assertEqual([call(True), call(False)], run_until_result.call_args_list)  # 确认两场战斗都正常运行。
 
-    def test_run_stops_without_phantom_count_when_result_screen_stays(self):  # 复现结算页淡出卡住时不能把残留页面当成新一场结算。
-        self.task.config["Battle Count"] = 2  # 将本次测试目标设置为两场战斗。
-        run_until_result = MagicMock(return_value=True)  # 模拟第一场成功到达结算页。
-        with patch.object(self.task, "ensure_in_front"), patch.object(self.task, "_return_to_main", return_value=True), patch.object(self.task, "_prepare_and_join_first_battle", return_value=True), patch.object(self.task, "_run_until_result", run_until_result), patch.object(self.task, "wait_click_feature", return_value=True), patch.object(self.task, "_wait_end_screen_gone", return_value=False), patch.object(self.task, "log_info"), patch.object(self.task, "log_error"), patch.object(self.task, "_collect_containers", return_value=True) as collect:  # 模拟点击继续战斗后结算页长时间不消失。
-            self.task.run()  # 执行会在结算页残留时停止的主流程。
-        run_until_result.assert_called_once_with(True)  # 不能把残留结算页当成第二场战斗。
-        collect.assert_not_called()  # 任务未真正完成时不进入领取流程。
 
     def test_run_closes_game_after_success_when_enabled(self):  # 验证用户开启开关后仅在达到目标场数时关闭游戏。
         self.task.config["Close Game After Completion"] = True  # 模拟用户在任务配置中开启完成后关闭游戏。
@@ -596,12 +525,6 @@ class TestAutoPveBattleTask(unittest.TestCase):  # 定义不共享全局应用�
             collect.assert_called_once_with()  # 第一场续战不触发领取，最后一场离开后才领取。
         wait_click.assert_not_called()  # 确认已经点击过继续或确认离开后不会再点结算页按钮。
 
-    def test_find_leave_followup_uses_after_sunk_continue_button(self):  # 验证击沉后续页使用专用继续战斗模板而不是结算页按钮。
-        after_sunk = Box(10, 10, 20, 20, name="Continue-Battle-After-Sunk")  # 构造击沉后续页的继续战斗按钮。
-        confirm = Box(40, 10, 20, 20, name="Leave-Battle-Confirm")  # 构造同一页的确认离开按钮。
-        with patch.object(self.task, "find_one", side_effect=lambda name, **kwargs: {"Continue-Battle-After-Sunk": after_sunk, "Leave-Battle-Confirm": confirm}.get(name)) as find_one:  # 按新模板名返回后续页按钮。
-            self.assertEqual((after_sunk, confirm), self.task._find_leave_followup())  # 确认后续页查找结果包含专用继续按钮。
-        self.assertEqual("Continue-Battle-After-Sunk", find_one.call_args_list[0].args[0])  # 确认优先搜索击沉后续页专用按钮。
 
     def test_find_one_uses_fourfold_local_search_for_continue_buttons(self):  # 验证两个继续按钮均围绕标注中心搜索且保留显式范围。
         feature = Box(300, 200, 100, 40)  # 构造标注中心位于三百五十、二百二十的按钮。

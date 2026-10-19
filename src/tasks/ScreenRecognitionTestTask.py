@@ -69,7 +69,7 @@ class ScreenRecognitionTestTask(AutoPveBattleTask):  # 像诊断任务一样定�
         if matched_boxes:  # 仅在本轮存在达到阈值的结果时重新启用覆盖层绘框。
             self.draw_boxes("screen_recognition_matches", matched_boxes, color="red")  # 只绘制达到正式阈值的命中框。
         scene_labels = {"main": "主界面", "battle_mode": "战斗模式选择", "addon": "加成页面", "equipment": "装备页面", "queue": "战斗排队", "battle_start": "等待战斗开始", "battle": "战斗界面", "map": "大地图", "result": "战斗结算", "menu": "菜单", "leave_battle": "离开战斗", "unknown": "未知界面"}  # 定义内部场景名称对应的中文显示文本。
-        scene_labels.update({"login": "登录界面", "claim_reward": "领取奖励", "reward_screen": "奖励展示", "container": "集装箱页面"})  # 补充新增按钮对应的只读场景名称。
+        scene_labels.update({"battle_survey": "战斗满意度问卷", "inactivity_penalty": "消极行为提示", "match_stopped": "匹配已停止", "leave_confirm": "离开战斗确认", "popup": "可关闭弹窗", "login": "登录界面", "claim_reward": "领取奖励", "reward_screen": "奖励展示", "container": "集装箱页面"})  # 补充新增按钮对应的只读场景名称。
         scene_label = scene_labels.get(scene, scene)  # 获取可直接展示给用户的场景名称。
         self.info_set("Detected Scene", f"{scene_label} ({scene})")  # 在任务信息区域持续显示本次判断结果。
         self.log_info(f"元素检查完成：{matched_count}/{len(feature_names)} 个达到阈值；当前界面：{scene_label} ({scene})。", notify=True)  # 汇总命中数量并通知最终场景。

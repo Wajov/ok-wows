@@ -114,7 +114,10 @@ class TestBattleDataset(unittest.TestCase):  # 覆盖计时、成对保存和地
             elapsed[0], scene = next(events)  # 推进到当前时间点。
             return scene  # 将模拟场景交给实际战斗状态机。
         with patch.object(self.task, "_detect_scene", side_effect=detect_scene), patch("src.tasks.AutoPveBattleTask.time.monotonic", side_effect=lambda: elapsed[0]), patch.object(self.task, "_initialize_battle_navigation"), patch.object(self.task, "_handle_map"), patch.object(self.task, "_close_map", return_value=True), patch.object(self.task, "_send_battle_action", return_value=0), patch.object(self.task, "sleep"), patch.object(self.task, "_handle_leave_battle", return_value="left"), patch.object(self.task, "_capture_battle_dataset", side_effect=lambda directory: samples.append((elapsed[0], directory))):  # 隔离所有游戏操作，只执行状态机计时和重置逻辑。
-            self.assertTrue(self.task._run_until_result())  # 时间线必须正常运行到结算。
+            outcome = self.task._run_until_result()
+            if outcome == "left":
+                outcome = self.task._run_until_result()  # 下一场单独建立采集和导航会话。
+            self.assertTrue(outcome)
         return samples  # 返回实际触发的采样事件供断言。
 
     def test_first_capture_after_sixty_seconds_then_every_minute(self):  # 排队时间不计入采样周期，采集也不打乱分钟节奏。
