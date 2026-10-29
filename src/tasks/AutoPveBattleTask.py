@@ -32,6 +32,10 @@ class AutoPveBattleTask(MyBaseTask):  # 定义自动完成 PVE 战斗的一次�
     DATASET_INTERVAL = 60  # 每场战斗从确认入场起每六十秒采集一组截图。
     DATASET_DIRECTORY = Path(__file__).resolve().parents[2] / "dataset"  # 将数据集固定保存在项目根目录，避免随工作目录变化。
     BATTLE_MODES = ("PVE-Battle", "Asymmetry-Battle")  # 下拉选项直接对应正式标注名称。
+    SUB_PAGES = ("battle_mode", "addon", "equipment", "container")  # 港口内可被 ESC 关闭的准备子页，转场中常被短暂误判。
+    LOADOUT_CLICK_INTERVAL = 3  # 准备入口点击冷却，保证 60 秒额度内至少有十余次重试机会。
+    LOADOUT_ESCAPE_INTERVAL = 3  # 准备子页 ESC 冷却，避免连续按键把两层页面一起关掉。
+    LOADOUT_REOPEN_LIMIT = 2  # 加成页中途退出后最多重新打开的轮数，防止反复开关。
     SCREEN_BUTTONS = {"battle_survey": "Battle-Survey-Close", "inactivity_penalty": "Inactivity-Penalty-Close", "login": "Login-Game", "claim_reward": "Claim-Reward", "reward_screen": "Close-Reward-Screen"}  # 先处理评价与处罚覆盖页，再处理登录和奖励。
     OPTIONAL_FEATURES = (*SCREEN_BUTTONS.values(), "Popup-ESC-Close", "Control-Camera", "Asymmetry-Battle", "Container-Menu", "Pick-Container", "Confirm-Container", "No-Commander", "Recall-Commander")  # 部分比例尚未提供这些新标注，识别允许跳过。
 
@@ -188,8 +192,21 @@ class AutoPveBattleTask(MyBaseTask):  # 定义自动完成 PVE 战斗的一次�
             self.sleep(min(.5, max(0, deadline - time.monotonic())))
         return self._flow_failed("选择战斗模式", progress, "60 秒内未确认港口目标模式")
 
+    def _loadout_click_target(self, feature, position):  # 准备入口的标注框包住“图标加悬停展开面板”。
+        if feature not in ("Addon-Selector", "Equipment"):
+            return position  # 其余入口直接使用识别框中心。
+        return Box(position.x + round(position.width * .10), position.y + round(position.height * .20), 1, 1, name=feature)  # 取框内固定比例，始终命中按钮图标本身。
+
+    def _click_loadout_entry(self, feature, position=None):  # 点击准备入口或页面按钮。
+        button = position if position is not None else self.find_one(feature, threshold=self.threshold)
+        if button is None:
+            return False  # 未识别到目标时交给下一轮重新检查。
+        self.click(self._loadout_click_target(feature, button), down_time=0.1, after_sleep=0)  # 使用稳定锚点，避免点击落在悬停面板上。
+        return True
+
     def _prepare_loadout_page(self, entry, target_scene, remove, empty):  # 装备准备按进入、卸载、返回三个阶段推进。
-        phase = "enter"
+        phase, opened = "enter", False  # opened 表示曾经确认打开过目标页，用来区分"从未进入"和"中途掉出"。
+        reopens = 0  # 页面中途退出后允许重新打开入口的轮数，避免在子页之间无限 ESC。
         progress = SceneProgress()
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
@@ -199,45 +216,53 @@ class AutoPveBattleTask(MyBaseTask):  # 定义自动完成 PVE 战斗的一次�
                 self.log_info(f"准备 {target_scene} 状态：{phase}:{scene}。")
             if now >= deadline:
                 break
-            if phase == "return" and scene == "main":
-                return True  # 只有确认回港才进入下一准备步骤。
             if scene == "match_stopped":
                 return self._flow_failed(f"准备 {target_scene}", progress, "服务器重启，匹配已停止")
-            feature, key = None, None
-            if scene in ("popup", "menu"):
-                key = "esc"
+            if scene == target_scene:
+                opened = True  # 已确认打开目标页，之后掉出页面才允许重开入口。
+                if phase != "return":
+                    phase = "remove"  # 只有真正打开过页面才进入卸载阶段，重开后仍停留在卸载阶段。
+                    position = self.find_one(remove, threshold=self.threshold)
+                    if position is not None:
+                        self._click_once(progress, remove, position, now)  # 点击卸载按钮，成功后下一帧应离开加成页。
+                    elif self.find_one(empty, threshold=self.threshold) is not None:
+                        phase = "return"  # 已无装备可卸载，转入回港确认。
+                    else:
+                        self._send_loadout_escape(progress, f"{phase}:{scene}", now)  # 两个按钮都不在时页面不可用，先回港重试。
+                if phase == "return":
+                    self._send_loadout_escape(progress, f"return:{scene}", now)  # 页面已空或卸载完成时必须按 ESC 离开，否则会空等 60 秒。
+            elif scene == "main" and phase == "return":
+                return True  # 卸载完成并确认回到港口，准备流程结束。
+            elif scene in ("popup", "menu"):
+                self._send_loadout_escape(progress, f"{phase}:{scene}", now)  # 覆盖弹窗先关闭再重新识别。
             elif scene in self.SCREEN_BUTTONS:
                 if not self._handle_screen_button(scene, deadline=deadline):
                     return False
-            elif scene == "main" and phase == "enter":
-                feature = entry
-            elif scene == target_scene:
-                if phase == "enter":
-                    phase = "remove"  # 打开页面后才允许执行卸载。
-                if phase == "remove":
-                    if self.find_one(remove, threshold=self.threshold) is not None:
-                        feature = remove
-                    elif self.find_one(empty, threshold=self.threshold) is not None:
-                        phase = "return"  # 确认已无装备，不把卸载点击发送成功当作完成。
-                if phase == "return":
-                    key = "esc"
-            elif scene in ("battle_mode", "addon", "equipment", "container"):
-                key = "esc"  # 意外进入其他准备子页时先返回，保留当前准备阶段。
-            action = feature or (f"{phase}:{scene}:esc" if key else None)
-            if action is not None:
-                if progress.exhausted(action, now):
-                    return self._flow_failed(f"准备 {target_scene}", progress, "同一动作三次后仍未推进")
-                if progress.action_due(action, now):
-                    if key:
-                        self.send_key(key, after_sleep=0)
-                        progress.record_action(action, time.monotonic())
-                    else:
-                        button = self.find_one(feature, threshold=self.threshold)
-                        if button is not None:
-                            self.click(button, down_time=0.1, after_sleep=0)
-                            progress.record_action(action, time.monotonic())
+            elif phase == "return":
+                self._send_loadout_escape(progress, f"return:{scene}", now)  # 回港过程中只关闭残留外壳，不再点击入口。
+            elif opened and scene in self.SUB_PAGES:
+                if reopens < self.LOADOUT_REOPEN_LIMIT:  # 已打开过的页面被转场或误判打断，按确认的策略重开入口。
+                    reopens += 1
+                    phase = "enter"
+                    self.log_info(f"加成页中途退出，第 {reopens} 次重新打开 {entry}。")
+                else:
+                    self._send_loadout_escape(progress, f"{phase}:{scene}", now)  # 重开额度用完后只退出，避免无限循环。
+            elif phase == "enter":
+                self._click_once(progress, entry, None, now)  # 尚未打开目标页时，入口点击可能在转场中丢失，冷却后重试。
+            elif scene == "main":
+                return True  # 卸载后回到港口即视为完成，不再点击入口。
             self.sleep(min(.5, max(0, deadline - time.monotonic())))
-        return self._flow_failed(f"准备 {target_scene}", progress, "60 秒内未完成准备并回港")
+        reason = f"{entry} 在 {progress.count(entry)} 次点击后仍未进入 {target_scene}，请抬升悬停态模板" if not opened else "60 秒内未完成准备并回港"
+        return self._flow_failed(f"准备 {target_scene}", progress, reason)
+
+    def _send_loadout_escape(self, progress, action, now):  # 冷却结束后发送一次 ESC，避免连续按键连关两层。
+        if progress.action_due(action, now, interval=self.LOADOUT_ESCAPE_INTERVAL):
+            self.send_key("esc", after_sleep=0)
+            progress.record_action(action, time.monotonic())
+
+    def _click_once(self, progress, feature, position, now):  # 冷却结束后点击一次入口或按钮。
+        if progress.action_due(feature, now, interval=self.LOADOUT_CLICK_INTERVAL) and self._click_loadout_entry(feature, position):
+            progress.record_action(feature, time.monotonic())  # 只有实际发出点击才计数，避免冷却窗口内重复累计。
 
     def _transition_battle_end(self, can_continue, open_leave=False, deadline=None):  # 结束状态机允许击沉确认、结算、弹窗和港口之间任意切换。
         progress = SceneProgress()
@@ -760,7 +785,7 @@ class AutoPveBattleTask(MyBaseTask):  # 定义自动完成 PVE 战斗的一次�
         if self.find_one("Leave-Battle-Confirm", threshold=self.threshold) is not None:
             return "leave_confirm"  # OCR 已要求离开标题上下文，避免把其他“是”误判为击沉确认页。
         if self.find_one("Popup-ESC-Close", threshold=max(self.threshold, 0.9), horizontal_variance=1, vertical_variance=1) is not None:  # 全图搜索 ESC 加关闭叉号，兼容居中问卷和右上角活动弹窗，不匹配普通 ESC 提示。
-            for scene, features in (("battle_mode", self.BATTLE_MODES), ("addon", ("Remove-All-Buff", "Install-Best-Buff")), ("equipment", ("Remove-All-Flag", "Install-Recommended-Flag"))):  # 准备子页面同样带关闭按钮，保留明确状态及已有 ESC 返回处理。
+            for scene, features in (("addon", ("Remove-All-Buff", "Install-Best-Buff")), ("equipment", ("Remove-All-Flag", "Install-Recommended-Flag")), ("battle_mode", self.BATTLE_MODES)):  # 加成页和旗子页必须先于模式页判断：港口左下角的模式标签在子页仍然可见。
                 if self._has_any(features):  # 已识别的准备页面由原流程管理，避免遮蔽状态。
                     return scene  # 启动返回和战斗恢复流程均会按 ESC 退出这些子页面。
             return "popup"  # 未知覆盖页交给执行流程按 ESC 后重新识别页面。
@@ -775,12 +800,12 @@ class AutoPveBattleTask(MyBaseTask):  # 定义自动完成 PVE 战斗的一次�
         battle_view = self._detect_battle_view()  # 由铭牌确认进入战斗，再用两个地图按钮区分视图。
         if battle_view is not None:  # 只有舰船铭牌存在时组合判断才属于战斗生命周期页面。
             return battle_view  # 返回大地图或普通战斗场景。
+        if self._has_any(("Remove-All-Buff", "Install-Best-Buff")):  # 加成页必须先于模式页判断：港口顶部的模式文字在加成页仍然可见。
+            return "addon"  # 返回加成选择场景。
+        if self._has_any(("Remove-All-Flag", "Install-Recommended-Flag")):  # 旗子页同样保留港口顶部模式文字。
+            return "equipment"  # 返回旗子装备场景。
         if self._has_any(self.BATTLE_MODES):  # 任一支持的模式按钮均可确认模式选择页面。
             return "battle_mode"  # 返回战斗模式选择场景。
-        if self._has_any(("Remove-All-Buff", "Install-Best-Buff")):  # 加成页根据装备或未装备状态按钮判断。
-            return "addon"  # 返回加成选择场景。
-        if self._has_any(("Remove-All-Flag", "Install-Recommended-Flag")):  # 旗子页根据装备或未装备状态按钮判断。
-            return "equipment"  # 返回旗子装备场景。
         if self.find_one("Join-Battle", threshold=self.threshold) is not None and self.find_one("Select-Battle-Mode", threshold=self.threshold) is not None:  # 主界面必须同时存在两个特有元素以减少误判。
             return "main"  # 返回游戏主界面场景。
         if self._has_any(("Pick-Container", "Confirm-Container")):  # 支持从上一次领取完成或手动停止的集装箱页面重新启动。

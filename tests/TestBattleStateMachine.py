@@ -26,9 +26,13 @@ class TestBattleStateMachine(unittest.TestCase):
         self.clock = 0
         self.scene = "unknown"
 
-    def replay(self, scenes, buttons=None):
-        """每轮提供一个新页面；耗尽后保留最后一页，模拟点击无效。"""
+    def replay(self, scenes, buttons=None, frame=None):
+        """每轮提供一个新页面；耗尽后保留最后一页，模拟点击无效。
+
+        frame 用于模拟转场：每次场景识别推进一个画面，用来复现入口点击在加载动画中丢失的路径。
+        """
         events = iter(scenes)
+        frames = iter(frame) if frame is not None else None
         default_buttons = {
             "result": {"Continue-Battle", "Back-To-Port"},
             "leave_confirm": {"Continue-Battle-After-Sunk", "Leave-Battle-Confirm"},
@@ -38,11 +42,12 @@ class TestBattleStateMachine(unittest.TestCase):
         default_buttons.update(buttons or {})
 
         def detect():
-            self.scene = next(events, self.scene)
+            source = frames if frames is not None else events  # 转场测试由画面推进场景，普通测试由每轮调用推进。
+            self.scene = next(source, self.scene)
             return self.scene
 
         def find(name, **kwargs):
-            return Box(10, 10, 30, 20, name=name) if name in default_buttons.get(self.scene, set()) else None
+            return Box(10, 10, 300, 120, name=name) if name in default_buttons.get(self.scene, set()) else None
 
         def sleep(seconds):
             self.clock += seconds
@@ -55,7 +60,7 @@ class TestBattleStateMachine(unittest.TestCase):
         return stack
 
     def clicks(self):
-        return [c.args[0].name for c in self.task.click.call_args_list]
+        return [getattr(c.args[0], "name", None) for c in self.task.click.call_args_list]
 
     def test_sunk_can_jump_directly_to_result_after_escape(self):
         with self.replay(["leave_battle", "unknown", "result", "result", "queue"]):
@@ -187,7 +192,83 @@ class TestBattleStateMachine(unittest.TestCase):
         with self.replay(["main", "unknown", "addon", "addon", "popup", "main"]), patch.object(self.task, "find_one", side_effect=find):
             self.assertTrue(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
         self.assertEqual(["Addon-Selector", "Remove-All-Buff"], self.clicks())
-        self.assertEqual(2, self.task.send_key.call_count)
+        self.assertEqual(2, self.task.send_key.call_count)  # 先按 ESC 离开已卸载的加成页，再关闭回港时的残留弹窗。
+
+    def test_empty_addon_page_escapes_back_to_port_instead_of_stalling(self):
+        # 2026-10-29 真机故障：加成页本来就是空的（只有“安装最佳”），重构后在 return 阶段不发 ESC，
+        # 于加成页空转 60 秒后中断。空页面必须立即按 ESC 回港。
+        port = {"Join-Battle", "Select-Battle-Mode", "Addon-Selector", "Equipment"}
+        empty_addon = {"Install-Best-Buff"}
+        with self.replay(["main", "addon", "addon", "addon", "main"], {"main": port, "addon": empty_addon}):
+            self.assertTrue(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
+        self.task.send_key.assert_called_with("esc", after_sleep=0)
+        self.assertLess(self.clock, 60)  # 不再耗尽整个 60 秒额度。
+
+    def test_loadout_entry_retries_after_dead_port_transition_without_escaping(self):
+        # 复现 2026-10-28 故障：入口点击在转场中丢失，旧逻辑第二次点击被五分钟冷却挡住后超时。
+        port = {"Join-Battle", "Select-Battle-Mode", "Addon-Selector", "Equipment"}
+        addon = {"Remove-All-Buff"}
+        scenes = ["main", "main", "main", "main", "main", "main", "main", "main", "addon", "addon", "main", "unknown", "main"]
+        with self.replay(scenes, {"main": port, "addon": addon}):
+            self.assertTrue(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
+        self.assertEqual(2, self.clicks().count("Addon-Selector"))  # 首次点击帧丢失后按冷却重试一次。
+        self.assertEqual(["Addon-Selector", "Addon-Selector", "Remove-All-Buff"], self.clicks())
+        self.task.send_key.assert_not_called()  # 进入阶段一次 ESC 都不发，旧逻辑会在这里盲按 ESC。
+        self.assertLess(self.clock, 60)
+
+    def test_addon_page_wins_over_visible_battle_mode_label(self):
+        # 2026-10-29 真机故障根因：加成页同时具备右上角 ESC 关闭标记和港口左下角的“非对称战斗”标签，
+        # 叠加判断里 battle_mode 排在 addon 之前时，加成页永远识别不成 addon。
+        def find(name, **kwargs):
+            visible = {"Popup-ESC-Close", "Install-Best-Buff", "Asymmetry-Battle"}  # 与真机截图一致的同框元素。
+            return Box(10, 10, 300, 120, name=name) if name in visible else None
+        with patch.object(self.task, "find_one", side_effect=find):
+            self.assertEqual("addon", self.task._detect_scene(refresh=False))
+
+    def test_loadout_entry_is_not_clicked_while_addon_page_opens(self):
+        # 加成页正在展开时被识别成 battle_mode，不能按 ESC 把刚打开的页面关掉。
+        port = {"Join-Battle", "Select-Battle-Mode", "Addon-Selector", "Equipment"}
+        addon = {"Remove-All-Buff"}
+        with self.replay(["main", "battle_mode", "battle_mode", "addon", "addon", "main", "unknown", "main"], {"main": port, "addon": addon}):
+            self.assertTrue(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
+        self.assertEqual(["Addon-Selector", "Remove-All-Buff"], self.clicks())  # 打开页面期间不再重点入口。
+        self.task.send_key.assert_not_called()  # 打开加成页的转场里一次 ESC 都不发，直接回港即视为完成。
+
+    def test_addon_page_that_looks_like_battle_mode_is_reopened_without_stalling(self):
+        # 2026-10-29 真机故障：加成页被持续误判成 battle_mode，旧逻辑只在港口外反复按 ESC，最终 60 秒超时中断。
+        port = {"Join-Battle", "Select-Battle-Mode", "Addon-Selector", "Equipment"}
+        addon = {"Remove-All-Buff"}
+        scenes = ["main", "battle_mode", "battle_mode", "battle_mode", "main", "main", "addon", "addon", "main"]
+        with self.replay(scenes, {"main": port, "addon": addon}):
+            self.assertTrue(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
+        self.assertIn("Addon-Selector", self.clicks())  # 必须真的重开入口，而不是空等。
+        self.assertIn("Remove-All-Buff", self.clicks())
+        self.assertLess(self.clock, 60)  # 不再耗尽整个 60 秒额度。
+
+    def test_reopen_is_bounded_so_pages_cannot_flip_forever(self):
+        # 页面反复掉出时必须有限次重开，然后给出可读的失败原因，而不是无限开关。
+        port = {"Join-Battle", "Select-Battle-Mode", "Addon-Selector", "Equipment"}
+        addon = {"Remove-All-Buff"}
+        scenes = ["main", "addon", "battle_mode"] * 40
+        with self.replay(scenes, {"main": port, "addon": addon}):
+            self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff")
+        self.assertLessEqual(self.clicks().count("Addon-Selector"), 1 + self.task.LOADOUT_REOPEN_LIMIT)
+
+    def test_loadout_entry_click_targets_button_icon_not_panel_center(self):
+        # 标注框包住悬停展开面板，点击必须落在框内按钮图标附近。
+        with self.replay(["main", "addon", "addon", "main"], {"main": {"Addon-Selector"}, "addon": {"Remove-All-Buff"}}):
+            self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff")
+        point = self.task.click.call_args_list[0].args[0]
+        self.assertEqual((40, 34), (point.x, point.y))  # 起点是标注框左上角 (10, 10)。
+        self.assertLess(point.x, 160)  # 明显偏离面板中心 (160, 70)。
+
+    def test_unreachable_loadout_entry_fails_with_actionable_reason(self):
+        def find(name, **kwargs):
+            return Box(10, 10, 300, 120, name=name) if name == "Addon-Selector" else None  # 加成页始终不出现。
+        with self.replay(["main", "main"]), patch.object(self.task, "find_one", side_effect=find):
+            self.assertFalse(self.task._prepare_loadout_page("Addon-Selector", "addon", "Remove-All-Buff", "Install-Best-Buff"))
+        self.assertGreaterEqual(self.clicks().count("Addon-Selector"), 8)  # 旧逻辑只允许两次。
+        self.assertIn("悬停态模板", self.task.log_error.call_args.args[0])
 
     def test_run_counts_confirmed_transitions_once_and_finishes_after_last_port(self):
         self.task.config["Battle Count"] = 2
